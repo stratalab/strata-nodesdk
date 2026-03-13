@@ -9,6 +9,13 @@ export interface JsOpenOptions {
   autoEmbed?: boolean
   /** Open in read-only mode. */
   readOnly?: boolean
+  /**
+   * Open as a read-only follower of an existing primary instance.
+   * Followers do not acquire any file lock and can open a database
+   * that is already exclusively locked by another process.
+   * Call `refresh()` to see new commits from the primary.
+   */
+  follower?: boolean
 }
 /** Time range filter for search (ISO 8601 datetime strings). */
 export interface JsTimeRange {
@@ -208,6 +215,14 @@ export declare class Strata {
   search(query: string, options?: JsSearchOptions | undefined | null): Promise<any>
   /** Apply retention policy to trigger garbage collection. */
   retentionApply(): Promise<void>
+  /** Returns `true` if this database was opened in read-only follower mode. */
+  isFollower(): Promise<boolean>
+  /**
+   * Replay new WAL records from the primary.
+   * Only meaningful for follower instances (opened with `{ follower: true }`).
+   * Returns the number of new records applied.
+   */
+  refresh(): Promise<number>
   /**
    * Close the database, releasing all resources.
    *

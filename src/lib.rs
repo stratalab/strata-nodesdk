@@ -30,6 +30,13 @@ pub struct JsOpenOptions {
     pub auto_embed: Option<bool>,
     /// Open in read-only mode.
     pub read_only: Option<bool>,
+    /// Open as a read-only follower of an existing primary instance.
+    ///
+    /// Followers do not acquire any file lock and can open a database
+    /// that is already exclusively locked by another process. All write
+    /// operations are rejected. Call `refresh()` to see new commits
+    /// from the primary.
+    pub follower: Option<bool>,
 }
 
 /// Time range filter for search (ISO 8601 datetime strings).
@@ -274,6 +281,7 @@ impl Strata {
     pub fn open(path: String, options: Option<JsOpenOptions>) -> napi::Result<Self> {
         let auto_embed = options.as_ref().and_then(|o| o.auto_embed).unwrap_or(false);
         let read_only = options.as_ref().and_then(|o| o.read_only).unwrap_or(false);
+        let follower = options.as_ref().and_then(|o| o.follower).unwrap_or(false);
 
         #[cfg(feature = "embed")]
         if auto_embed {
@@ -283,8 +291,11 @@ impl Strata {
         }
 
         let mut opts = OpenOptions::new();
-        if read_only {
+        if read_only || follower {
             opts = opts.access_mode(AccessMode::ReadOnly);
+        }
+        if follower {
+            opts = opts.follower(true);
         }
 
         let raw = RustStrata::open_with(&path, opts).map_err(to_napi_err)?;
@@ -1925,7 +1936,7 @@ impl Strata {
                     "apiKey".into(),
                     model
                         .api_key
-                        .map(serde_json::Value::String)
+                        .map(|s| serde_json::Value::String(s.to_string()))
                         .unwrap_or(serde_json::Value::Null),
                 );
                 m.insert("timeoutMs".into(), serde_json::Value::Number(model.timeout_ms.into()));
@@ -2088,6 +2099,37 @@ impl Strata {
                     "Unexpected output for RetentionApply",
                 )),
             }
+        })
+        .await
+        .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
+    }
+
+    // =========================================================================
+    // Follower mode
+    // =========================================================================
+
+    /// Returns `true` if this database was opened in read-only follower mode.
+    #[napi(js_name = "isFollower")]
+    pub fn is_follower(&self) -> napi::Result<bool> {
+        let guard = lock_inner(&self.inner)?;
+        Ok(guard.database().is_follower())
+    }
+
+    /// Replay new WAL records from the primary.
+    ///
+    /// Only meaningful for follower instances (opened with `{ follower: true }`).
+    /// Returns the number of new records applied. Returns 0 for non-follower
+    /// instances or when there are no new records.
+    #[napi]
+    pub async fn refresh(&self) -> napi::Result<i64> {
+        let inner = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let guard = lock_inner(&inner)?;
+            let applied = guard
+                .database()
+                .refresh()
+                .map_err(|e| napi::Error::from_reason(format!("{}", e)))?;
+            Ok(applied as i64)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -3993,7 +4035,7 @@ pub fn setup() -> napi::Result<String> {
     #[cfg(feature = "embed")]
     {
         let path = strata_intelligence::embed::download::ensure_model()
-            .map_err(|e| napi::Error::from_reason(e))?;
+            .map_err(napi::Error::from_reason)?;
         Ok(path.to_string_lossy().into_owned())
     }
 
