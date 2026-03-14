@@ -256,6 +256,192 @@ fn lock_session(
 }
 
 // ---------------------------------------------------------------------------
+// Generic execute helpers
+// ---------------------------------------------------------------------------
+
+/// Convert a snake_case or dot-notation command name to PascalCase.
+///
+/// Examples: `kv_put` → `KvPut`, `kv.put` → `KvPut`, `graph_add_node` → `GraphAddNode`
+fn to_pascal_case(s: &str) -> String {
+    s.replace('.', "_")
+        .split('_')
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(f) => {
+                    let mut s = f.to_uppercase().to_string();
+                    s.push_str(chars.as_str());
+                    s
+                }
+            }
+        })
+        .collect()
+}
+
+/// Convert a plain JSON value to the tagged Value format used by serde.
+///
+/// `"hello"` → `{"String": "hello"}`
+/// `42` → `{"Int": 42}`
+/// `null` → `"Null"`
+fn json_to_tagged_value(v: serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Null => serde_json::json!("Null"),
+        serde_json::Value::Bool(b) => serde_json::json!({"Bool": b}),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                serde_json::json!({"Int": i})
+            } else {
+                serde_json::json!({"Float": n.as_f64().unwrap_or(0.0)})
+            }
+        }
+        serde_json::Value::String(s) => serde_json::json!({"String": s}),
+        serde_json::Value::Array(arr) => {
+            serde_json::json!({"Array": arr.into_iter().map(json_to_tagged_value).collect::<Vec<_>>()})
+        }
+        serde_json::Value::Object(obj) => {
+            let map: serde_json::Map<String, serde_json::Value> = obj
+                .into_iter()
+                .map(|(k, v)| (k, json_to_tagged_value(v)))
+                .collect();
+            serde_json::json!({"Object": map})
+        }
+    }
+}
+
+/// All field names in the Command/types hierarchy that carry `Value` type.
+/// These need conversion from plain JSON to the tagged serde format.
+const VALUE_TYPED_FIELDS: &[&str] = &["value", "payload", "metadata", "properties", "definition"];
+
+/// Convert Value-typed fields in a JSON map from plain JSON to tagged format.
+fn tag_value_fields(obj: &mut serde_json::Map<String, serde_json::Value>) {
+    for field in VALUE_TYPED_FIELDS {
+        if let Some(v) = obj.remove(*field) {
+            obj.insert((*field).to_string(), json_to_tagged_value(v));
+        }
+    }
+}
+
+/// Pre-process args: convert Value-typed fields from plain JSON
+/// to the tagged Value format expected by serde deserialization.
+///
+/// Handles:
+/// - Top-level fields: value, payload, metadata, properties, definition
+/// - Array fields (entries, nodes, edges, filter) whose elements may
+///   contain Value-typed fields
+fn preprocess_value_fields(args: &mut serde_json::Map<String, serde_json::Value>) {
+    // Top-level Value-typed fields
+    tag_value_fields(args);
+
+    // Array fields whose elements may contain Value-typed fields:
+    // - entries: KvBatchPut, EventBatchAppend, StateBatchSet, JsonBatchSet, VectorBatchUpsert
+    // - nodes/edges: GraphBulkInsert
+    // - filter: VectorSearch (MetadataFilter has value: Value)
+    for array_field in &["entries", "nodes", "edges", "filter"] {
+        if let Some(serde_json::Value::Array(items)) = args.get_mut(*array_field) {
+            for item in items.iter_mut() {
+                if let serde_json::Value::Object(obj) = item {
+                    tag_value_fields(obj);
+                }
+            }
+        }
+    }
+}
+
+/// Convert an Output enum to plain JSON suitable for JavaScript consumers.
+fn output_to_json(output: Output) -> serde_json::Value {
+    match output {
+        Output::Unit => serde_json::Value::Null,
+        Output::Bool(b) => serde_json::json!(b),
+        Output::Uint(n) => serde_json::json!(n),
+        Output::Version(n) => serde_json::json!(n),
+        Output::MaybeVersion(v) => match v {
+            Some(n) => serde_json::json!(n),
+            None => serde_json::Value::Null,
+        },
+        Output::Maybe(None) => serde_json::Value::Null,
+        Output::Maybe(Some(v)) => value_to_js(v),
+        Output::MaybeVersioned(None) => serde_json::Value::Null,
+        Output::MaybeVersioned(Some(vv)) => versioned_to_js(vv),
+        Output::VersionedValues(vvs) => {
+            serde_json::json!(vvs.into_iter().map(versioned_to_js).collect::<Vec<_>>())
+        }
+        Output::VersionHistory(None) => serde_json::Value::Null,
+        Output::VersionHistory(Some(vvs)) => {
+            serde_json::json!(vvs.into_iter().map(versioned_to_js).collect::<Vec<_>>())
+        }
+        Output::Keys(keys) => serde_json::json!(keys),
+        Output::SpaceList(names) => serde_json::json!(names),
+        Output::Versions(vs) => serde_json::json!(vs),
+        Output::Text(s) => serde_json::json!(s),
+        Output::Embedding(v) => serde_json::json!(v),
+        Output::Embeddings(v) => serde_json::json!(v),
+        Output::ConfigValue(v) => match v {
+            Some(s) => serde_json::json!(s),
+            None => serde_json::Value::Null,
+        },
+        // Vector/batch results contain Value fields that need un-tagging
+        Output::VectorMatches(matches) => {
+            serde_json::json!(matches.into_iter().map(|m| {
+                serde_json::json!({
+                    "key": m.key,
+                    "score": m.score,
+                    "metadata": m.metadata.map(value_to_js),
+                })
+            }).collect::<Vec<_>>())
+        }
+        Output::VectorData(None) => serde_json::Value::Null,
+        Output::VectorData(Some(vd)) => {
+            serde_json::json!({
+                "key": vd.key,
+                "data": {
+                    "embedding": vd.data.embedding,
+                    "metadata": vd.data.metadata.map(value_to_js),
+                },
+                "version": vd.version,
+                "timestamp": vd.timestamp,
+            })
+        }
+        Output::BatchGetResults(results) => {
+            serde_json::json!(results.into_iter().map(|r| {
+                let mut obj = serde_json::Map::new();
+                if let Some(v) = r.value {
+                    obj.insert("value".to_string(), value_to_js(v));
+                }
+                if let Some(v) = r.version {
+                    obj.insert("version".to_string(), serde_json::json!(v));
+                }
+                if let Some(t) = r.timestamp {
+                    obj.insert("timestamp".to_string(), serde_json::json!(t));
+                }
+                if let Some(e) = r.error {
+                    obj.insert("error".to_string(), serde_json::json!(e));
+                }
+                serde_json::Value::Object(obj)
+            }).collect::<Vec<_>>())
+        }
+        // For all remaining complex types, use serde serialization
+        // and strip the outer variant wrapper.
+        other => {
+            if let Ok(raw) = serde_json::to_value(&other) {
+                // Output serializes as {"VariantName": inner} — unwrap the variant.
+                if let serde_json::Value::Object(obj) = raw {
+                    if obj.len() == 1 {
+                        return obj.into_iter().next().unwrap().1;
+                    }
+                    // Unit variants like TxnBegun serialize as strings
+                    return serde_json::Value::Object(obj);
+                }
+                // Unit variants serialize as strings like "TxnBegun"
+                raw
+            } else {
+                serde_json::Value::Null
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Main struct
 // ---------------------------------------------------------------------------
 
@@ -2099,6 +2285,91 @@ impl Strata {
                     "Unexpected output for RetentionApply",
                 )),
             }
+        })
+        .await
+        .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
+    }
+
+    // =========================================================================
+    // Generic command dispatch
+    // =========================================================================
+
+    /// Execute any command by name with JSON arguments.
+    ///
+    /// This provides a generic dispatch interface: pass a command name (snake_case
+    /// or dot-notation) and a JSON args object, and get a JSON result back.
+    ///
+    /// ```js
+    /// const version = await db.execute("kv_put", { key: "foo", value: "bar" });
+    /// const val = await db.execute("kv_get", { key: "foo" });
+    /// const keys = await db.execute("kv.list", { prefix: "f" });
+    /// ```
+    ///
+    /// Command names map to executor Command variants: `kv_put` → `KvPut`,
+    /// `graph_add_node` → `GraphAddNode`, etc.  Branch and space default to
+    /// the current context if not specified in args.
+    #[napi]
+    pub async fn execute(
+        &self,
+        command: String,
+        args: Option<serde_json::Value>,
+    ) -> napi::Result<serde_json::Value> {
+        let inner = self.inner.clone();
+        let session_arc = self.session.clone();
+        tokio::task::spawn_blocking(move || {
+            // Normalize command name: kv.put → kv_put → KvPut
+            let pascal = to_pascal_case(&command);
+
+            // Get args as a mutable map (empty if null/absent)
+            let mut args_map = match args.unwrap_or(serde_json::Value::Null) {
+                serde_json::Value::Object(m) => m,
+                serde_json::Value::Null => serde_json::Map::new(),
+                _ => {
+                    return Err(napi::Error::from_reason(
+                        "[VALIDATION] args must be an object or null",
+                    ))
+                }
+            };
+
+            // Convert plain JSON values to tagged Value format for value/payload fields
+            preprocess_value_fields(&mut args_map);
+
+            // Build the Command JSON.
+            // Unit variants (Ping, Info, etc.) serialize as just "Ping",
+            // while struct variants serialize as {"KvPut": {key: ..., value: ...}}.
+            // Try struct form first, fall back to unit variant if args are empty.
+            let cmd: Command = if args_map.is_empty() {
+                // Try unit variant first (e.g., "Ping")
+                serde_json::from_value::<Command>(serde_json::Value::String(pascal.clone()))
+                    .or_else(|_| {
+                        // Fall back to struct variant with empty fields
+                        let mut m = serde_json::Map::new();
+                        m.insert(pascal.clone(), serde_json::Value::Object(args_map.clone()));
+                        serde_json::from_value::<Command>(serde_json::Value::Object(m))
+                    })
+            } else {
+                let mut m = serde_json::Map::new();
+                m.insert(pascal.clone(), serde_json::Value::Object(args_map));
+                serde_json::from_value::<Command>(serde_json::Value::Object(m))
+            }
+            .map_err(|e| {
+                napi::Error::from_reason(format!(
+                    "[VALIDATION] Invalid command '{}': {}",
+                    command, e
+                ))
+            })?;
+
+            // Execute through session (supports transactions) or executor
+            let mut session_guard = lock_session(&session_arc)?;
+            let output = if let Some(session) = session_guard.as_mut() {
+                session.execute(cmd).map_err(to_napi_err)?
+            } else {
+                let guard = lock_inner(&inner)?;
+                guard.executor().execute(cmd).map_err(to_napi_err)?
+            };
+
+            // Convert Output to plain JSON
+            Ok(output_to_json(output))
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?

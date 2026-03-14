@@ -2019,6 +2019,318 @@ describe('Strata', () => {
   });
 
   // =========================================================================
+  // Generic execute
+  // =========================================================================
+
+  describe('db.execute()', () => {
+    test('kv_put and kv_get', async () => {
+      const version = await db.execute('kv_put', { key: 'exec_key', value: 'exec_val' });
+      expect(typeof version).toBe('number');
+      const result = await db.execute('kv_get', { key: 'exec_key' });
+      expect(result.value).toBe('exec_val');
+      expect(typeof result.version).toBe('number');
+      expect(typeof result.timestamp).toBe('number');
+    });
+
+    test('dot notation works (kv.put)', async () => {
+      await db.execute('kv.put', { key: 'dot_key', value: 42 });
+      const result = await db.execute('kv.get', { key: 'dot_key' });
+      expect(result.value).toBe(42);
+    });
+
+    test('kv_list returns array', async () => {
+      await db.execute('kv_put', { key: 'list_a', value: 1 });
+      await db.execute('kv_put', { key: 'list_b', value: 2 });
+      const keys = await db.execute('kv_list', { prefix: 'list_' });
+      expect(Array.isArray(keys)).toBe(true);
+      expect(keys).toContain('list_a');
+      expect(keys).toContain('list_b');
+    });
+
+    test('kv_delete returns boolean', async () => {
+      await db.execute('kv_put', { key: 'del_me', value: 'bye' });
+      const result = await db.execute('kv_delete', { key: 'del_me' });
+      expect(result).toBe(true);
+    });
+
+    test('state_set and state_get', async () => {
+      await db.execute('state_set', { cell: 'counter', value: 100 });
+      const result = await db.execute('state_get', { cell: 'counter' });
+      expect(result.value).toBe(100);
+    });
+
+    test('event_append and event_get', async () => {
+      const seq = await db.execute('event_append', { event_type: 'click', payload: { x: 10 } });
+      expect(typeof seq).toBe('number');
+      const evt = await db.execute('event_get', { sequence: seq });
+      expect(evt).not.toBeNull();
+    });
+
+    test('json_set and json_get', async () => {
+      await db.execute('json_set', { key: 'doc1', path: '$', value: { name: 'Alice' } });
+      const result = await db.execute('json_get', { key: 'doc1', path: '$.name' });
+      expect(result.value).toBe('Alice');
+    });
+
+    test('unit variant commands (ping, info, flush)', async () => {
+      const pong = await db.execute('ping');
+      expect(typeof pong.version).toBe('string');
+      const info = await db.execute('info');
+      expect(info).toBeDefined();
+      await db.execute('flush');
+      await db.execute('compact');
+    });
+
+    test('unknown command returns error', async () => {
+      await expect(db.execute('nonexistent_cmd', {})).rejects.toThrow();
+    });
+
+    test('object values round-trip', async () => {
+      await db.execute('kv_put', { key: 'obj_test', value: { nested: { deep: true } } });
+      const result = await db.execute('kv_get', { key: 'obj_test' });
+      expect(result.value).toEqual({ nested: { deep: true } });
+    });
+
+    test('null args ok for no-arg commands', async () => {
+      const result = await db.execute('ping', null);
+      expect(typeof result.version).toBe('string');
+    });
+
+    test('works within transaction', async () => {
+      await db.begin();
+      await db.execute('kv_put', { key: 'txn_exec', value: 'in_txn' });
+      await db.commit();
+      const result = await db.execute('kv_get', { key: 'txn_exec' });
+      expect(result.value).toBe('in_txn');
+    });
+
+    // Value type coverage
+    test('boolean value round-trips', async () => {
+      await db.execute('kv_put', { key: 'bool_test', value: true });
+      const result = await db.execute('kv_get', { key: 'bool_test' });
+      expect(result.value).toBe(true);
+    });
+
+    test('null value round-trips', async () => {
+      await db.execute('kv_put', { key: 'null_test', value: null });
+      const result = await db.execute('kv_get', { key: 'null_test' });
+      expect(result.value).toBeNull();
+    });
+
+    test('float value round-trips', async () => {
+      await db.execute('kv_put', { key: 'float_test', value: 3.14 });
+      const result = await db.execute('kv_get', { key: 'float_test' });
+      expect(result.value).toBeCloseTo(3.14);
+    });
+
+    test('array value round-trips', async () => {
+      await db.execute('kv_put', { key: 'arr_test', value: [1, 'two', true, null] });
+      const result = await db.execute('kv_get', { key: 'arr_test' });
+      expect(result.value).toEqual([1, 'two', true, null]);
+    });
+
+    test('deeply nested object round-trips', async () => {
+      const complex = { a: { b: { c: [1, { d: 'deep' }] } }, e: null, f: true };
+      await db.execute('kv_put', { key: 'deep_test', value: complex });
+      const result = await db.execute('kv_get', { key: 'deep_test' });
+      expect(result.value).toEqual(complex);
+    });
+
+    // PascalCase passthrough
+    test('PascalCase command names work directly', async () => {
+      await db.execute('KvPut', { key: 'pascal_test', value: 'ok' });
+      const result = await db.execute('KvGet', { key: 'pascal_test' });
+      expect(result.value).toBe('ok');
+    });
+
+    // Batch operations
+    test('kv_batch_put with entries', async () => {
+      const result = await db.execute('kv_batch_put', {
+        entries: [
+          { key: 'batch_1', value: 'one' },
+          { key: 'batch_2', value: 42 },
+          { key: 'batch_3', value: { nested: true } },
+        ]
+      });
+      expect(Array.isArray(result)).toBe(true);
+      expect(result.length).toBe(3);
+
+      const v1 = await db.execute('kv_get', { key: 'batch_1' });
+      expect(v1.value).toBe('one');
+      const v2 = await db.execute('kv_get', { key: 'batch_2' });
+      expect(v2.value).toBe(42);
+      const v3 = await db.execute('kv_get', { key: 'batch_3' });
+      expect(v3.value).toEqual({ nested: true });
+    });
+
+    // Vector operations with metadata
+    test('vector_upsert and vector_get with metadata', async () => {
+      await db.execute('vector_create_collection', {
+        collection: 'exec_vectors',
+        dimension: 3,
+        metric: 'cosine'
+      });
+
+      await db.execute('vector_upsert', {
+        collection: 'exec_vectors',
+        key: 'v1',
+        vector: [1.0, 0.0, 0.0],
+        metadata: { color: 'red', score: 42 }
+      });
+
+      const data = await db.execute('vector_get', {
+        collection: 'exec_vectors',
+        key: 'v1'
+      });
+      expect(data).not.toBeNull();
+      expect(data.data.metadata).toEqual({ color: 'red', score: 42 });
+    });
+
+    test('vector_search returns results', async () => {
+      await db.execute('vector_create_collection', {
+        collection: 'exec_vectors',
+        dimension: 3,
+        metric: 'cosine'
+      });
+      await db.execute('vector_upsert', {
+        collection: 'exec_vectors',
+        key: 'v1',
+        vector: [1.0, 0.0, 0.0],
+        metadata: { color: 'red', score: 42 }
+      });
+      await db.execute('vector_upsert', {
+        collection: 'exec_vectors',
+        key: 'v2',
+        vector: [0.9, 0.1, 0.0],
+        metadata: { color: 'blue' }
+      });
+
+      const results = await db.execute('vector_search', {
+        collection: 'exec_vectors',
+        query: [1.0, 0.0, 0.0],
+        k: 2
+      });
+      expect(Array.isArray(results)).toBe(true);
+      expect(results.length).toBe(2);
+      expect(results[0]).toHaveProperty('key');
+      expect(results[0]).toHaveProperty('score');
+    });
+
+    test('vector_search with metadata filter', async () => {
+      await db.execute('vector_create_collection', {
+        collection: 'filt_vecs',
+        dimension: 3,
+        metric: 'cosine'
+      });
+      await db.execute('vector_upsert', {
+        collection: 'filt_vecs',
+        key: 'v1',
+        vector: [1.0, 0.0, 0.0],
+        metadata: { color: 'red' }
+      });
+      await db.execute('vector_upsert', {
+        collection: 'filt_vecs',
+        key: 'v2',
+        vector: [0.9, 0.1, 0.0],
+        metadata: { color: 'blue' }
+      });
+
+      // Filter for color=red — exercises filter array Value preprocessing
+      const results = await db.execute('vector_search', {
+        collection: 'filt_vecs',
+        query: [1.0, 0.0, 0.0],
+        k: 10,
+        filter: [{ field: 'color', op: 'eq', value: 'red' }]
+      });
+      expect(results.length).toBe(1);
+      expect(results[0].key).toBe('v1');
+      // Filtered search includes metadata as plain JSON (not tagged)
+      expect(results[0].metadata).toEqual({ color: 'red' });
+    });
+
+    // Graph operations with properties
+    test('graph_add_node with properties', async () => {
+      await db.execute('graph_add_node', {
+        graph: 'exec_graph',
+        node_id: 'alice',
+        properties: { age: 30, role: 'engineer' }
+      });
+      const node = await db.execute('graph_get_node', {
+        graph: 'exec_graph',
+        node_id: 'alice'
+      });
+      expect(node).not.toBeNull();
+      // GraphGetNode returns NodeData: { properties, entity_ref, object_type }
+      expect(node.properties.age).toBe(30);
+      expect(node.properties.role).toBe('engineer');
+    });
+
+    test('graph_add_edge with properties', async () => {
+      // Create both nodes first (each test gets a fresh db)
+      await db.execute('graph_add_node', {
+        graph: 'exec_graph',
+        node_id: 'alice',
+        properties: { age: 30 }
+      });
+      await db.execute('graph_add_node', {
+        graph: 'exec_graph',
+        node_id: 'bob',
+        properties: { age: 25 }
+      });
+      await db.execute('graph_add_edge', {
+        graph: 'exec_graph',
+        src: 'alice',
+        dst: 'bob',
+        edge_type: 'knows',
+        weight: 0.9,
+        properties: { since: 2020 }
+      });
+      const neighbors = await db.execute('graph_neighbors', {
+        graph: 'exec_graph',
+        node_id: 'alice'
+      });
+      expect(Array.isArray(neighbors)).toBe(true);
+      expect(neighbors.length).toBe(1);
+      expect(neighbors[0].node_id).toBe('bob');
+    });
+
+    // Event payload (object with non-string values)
+    test('event_append with complex payload', async () => {
+      const seq = await db.execute('event_append', {
+        event_type: 'metric',
+        payload: { values: [1.1, 2.2], tags: { env: 'prod' }, ok: true }
+      });
+      expect(typeof seq).toBe('number');
+    });
+
+    // State with various value types
+    test('state_cas (compare and swap)', async () => {
+      await db.execute('state_set', { cell: 'cas_cell', value: 'initial' });
+      const before = await db.execute('state_get', { cell: 'cas_cell' });
+      const result = await db.execute('state_cas', {
+        cell: 'cas_cell',
+        expected_counter: before.version,
+        value: 'swapped'
+      });
+      expect(typeof result).toBe('number'); // returns version on success
+      const after = await db.execute('state_get', { cell: 'cas_cell' });
+      expect(after.value).toBe('swapped');
+    });
+
+    // Error: wrong field names
+    test('wrong field names return error', async () => {
+      await expect(
+        db.execute('kv_put', { wrong_field: 'foo', value: 'bar' })
+      ).rejects.toThrow();
+    });
+
+    // Error: non-object args
+    test('non-object args return error', async () => {
+      await expect(db.execute('kv_put', 'not an object')).rejects.toThrow(/args must be an object/);
+    });
+  });
+
+  // =========================================================================
   // Close lifecycle
   // =========================================================================
 

@@ -922,6 +922,18 @@ export class Strata {
   // Retention
   retentionApply(): Promise<void>;
 
+  // Generic command dispatch
+  /**
+   * Execute any command by name with JSON arguments.
+   *
+   * Command names use snake_case or dot notation: `"kv_put"`, `"kv.put"`,
+   * `"graph_add_node"`, etc. Args is a plain JSON object matching the
+   * command's parameters. Returns the result as plain JSON.
+   *
+   * Branch and space default to current context if not specified.
+   */
+  execute(command: string, args?: Record<string, unknown>): Promise<unknown>;
+
   // Follower mode
   /** Returns `true` if this database was opened in read-only follower mode. */
   isFollower(): Promise<boolean>;

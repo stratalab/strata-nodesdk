@@ -11,9 +11,11 @@ export interface JsOpenOptions {
   readOnly?: boolean
   /**
    * Open as a read-only follower of an existing primary instance.
+   *
    * Followers do not acquire any file lock and can open a database
-   * that is already exclusively locked by another process.
-   * Call `refresh()` to see new commits from the primary.
+   * that is already exclusively locked by another process. All write
+   * operations are rejected. Call `refresh()` to see new commits
+   * from the primary.
    */
   follower?: boolean
 }
@@ -215,12 +217,31 @@ export declare class Strata {
   search(query: string, options?: JsSearchOptions | undefined | null): Promise<any>
   /** Apply retention policy to trigger garbage collection. */
   retentionApply(): Promise<void>
+  /**
+   * Execute any command by name with JSON arguments.
+   *
+   * This provides a generic dispatch interface: pass a command name (snake_case
+   * or dot-notation) and a JSON args object, and get a JSON result back.
+   *
+   * ```js
+   * const version = await db.execute("kv_put", { key: "foo", value: "bar" });
+   * const val = await db.execute("kv_get", { key: "foo" });
+   * const keys = await db.execute("kv.list", { prefix: "f" });
+   * ```
+   *
+   * Command names map to executor Command variants: `kv_put` → `KvPut`,
+   * `graph_add_node` → `GraphAddNode`, etc.  Branch and space default to
+   * the current context if not specified in args.
+   */
+  execute(command: string, args?: any | undefined | null): Promise<any>
   /** Returns `true` if this database was opened in read-only follower mode. */
-  isFollower(): Promise<boolean>
+  isFollower(): boolean
   /**
    * Replay new WAL records from the primary.
+   *
    * Only meaningful for follower instances (opened with `{ follower: true }`).
-   * Returns the number of new records applied.
+   * Returns the number of new records applied. Returns 0 for non-follower
+   * instances or when there are no new records.
    */
   refresh(): Promise<number>
   /**
