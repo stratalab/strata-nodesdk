@@ -148,6 +148,14 @@ export declare class Strata {
   ping(): Promise<string>
   /** Get database info. */
   info(): Promise<any>
+  /**
+   * Get a structured snapshot of the database for agent introspection.
+   *
+   * Returns version, branch, spaces, follower status, per-primitive
+   * summaries (counts, collections, graphs), configuration, and
+   * capability flags — everything an agent needs to plan its actions.
+   */
+  describe(): Promise<any>
   /** Flush writes to disk. */
   flush(): Promise<void>
   /** Trigger compaction. */

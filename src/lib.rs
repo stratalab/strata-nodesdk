@@ -14,9 +14,9 @@ use stratadb::{
     AccessMode, BatchEventEntry, BatchGetItemResult, BatchItemResult, BatchJsonDeleteEntry,
     BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry, BatchStateEntry, BatchVectorEntry,
     BranchExportResult, BranchId, BranchImportResult, BulkGraphEdge, BulkGraphNode,
-    BundleValidateResult, CollectionInfo, Command, DistanceMetric, Error as StrataError, FilterOp,
-    GraphAnalyticsF64Result, GraphAnalyticsU64Result, GraphBfsResult,
-    MergeStrategy, MetadataFilter, OpenOptions, Output, SearchQuery, Session,
+    BundleValidateResult, CollectionInfo, Command, DescribeResult, DistanceMetric,
+    Error as StrataError, FilterOp, GraphAnalyticsF64Result, GraphAnalyticsU64Result,
+    GraphBfsResult, MergeStrategy, MetadataFilter, OpenOptions, Output, SearchQuery, Session,
     Strata as RustStrata, TimeRangeInput, TxnOptions, Value, VersionedBranchInfo, VersionedValue,
 };
 
@@ -196,6 +196,61 @@ fn versioned_to_js(vv: VersionedValue) -> serde_json::Value {
     })
 }
 
+/// Convert a DescribeResult to camelCase JSON for JS consumers.
+fn describe_to_js(desc: DescribeResult) -> serde_json::Value {
+    serde_json::json!({
+        "version": desc.version,
+        "path": desc.path,
+        "branch": desc.branch,
+        "branches": desc.branches,
+        "spaces": desc.spaces,
+        "follower": desc.follower,
+        "primitives": {
+            "kv": { "count": desc.primitives.kv.count },
+            "json": { "count": desc.primitives.json.count },
+            "events": { "count": desc.primitives.events.count },
+            "state": {
+                "count": desc.primitives.state.count,
+                "cells": desc.primitives.state.cells,
+            },
+            "vector": {
+                "collections": desc.primitives.vector.collections.iter().map(|c| {
+                    serde_json::json!({
+                        "name": c.name,
+                        "dimension": c.dimension,
+                        "metric": serde_json::to_value(c.metric).unwrap_or_default(),
+                        "count": c.count,
+                    })
+                }).collect::<Vec<_>>(),
+            },
+            "graph": {
+                "graphs": desc.primitives.graph.graphs.iter().map(|g| {
+                    serde_json::json!({
+                        "name": g.name,
+                        "nodes": g.nodes,
+                        "edges": g.edges,
+                        "objectTypes": g.object_types,
+                        "linkTypes": g.link_types,
+                    })
+                }).collect::<Vec<_>>(),
+            },
+        },
+        "config": {
+            "provider": desc.config.provider,
+            "defaultModel": desc.config.default_model,
+            "autoEmbed": desc.config.auto_embed,
+            "embedModel": desc.config.embed_model,
+            "durability": desc.config.durability,
+        },
+        "capabilities": {
+            "search": desc.capabilities.search,
+            "vectorSearch": desc.capabilities.vector_search,
+            "generation": desc.capabilities.generation,
+            "autoEmbed": desc.capabilities.auto_embed,
+        },
+    })
+}
+
 /// Convert stratadb error to napi Error with category prefix.
 fn to_napi_err(e: StrataError) -> napi::Error {
     let code = match &e {
@@ -204,7 +259,8 @@ fn to_napi_err(e: StrataError) -> napi::Error {
         | StrataError::CollectionNotFound { .. }
         | StrataError::StreamNotFound { .. }
         | StrataError::CellNotFound { .. }
-        | StrataError::DocumentNotFound { .. } => "[NOT_FOUND]",
+        | StrataError::DocumentNotFound { .. }
+        | StrataError::GraphNotFound { .. } => "[NOT_FOUND]",
 
         StrataError::InvalidKey { .. }
         | StrataError::InvalidPath { .. }
@@ -420,6 +476,65 @@ fn output_to_json(output: Output) -> serde_json::Value {
                 serde_json::Value::Object(obj)
             }).collect::<Vec<_>>())
         }
+        // Agent-first introspection (#1274)
+        Output::Described(desc) => describe_to_js(desc),
+        // Agent-first write metadata (#1443)
+        Output::WriteResult { key, version } => serde_json::json!({
+            "key": key,
+            "version": version,
+        }),
+        Output::DeleteResult { key, deleted } => serde_json::json!({
+            "key": key,
+            "deleted": deleted,
+        }),
+        Output::EventAppendResult {
+            sequence,
+            event_type,
+        } => serde_json::json!({
+            "sequence": sequence,
+            "eventType": event_type,
+        }),
+        Output::VectorWriteResult {
+            collection,
+            key,
+            version,
+        } => serde_json::json!({
+            "collection": collection,
+            "key": key,
+            "version": version,
+        }),
+        Output::VectorDeleteResult {
+            collection,
+            key,
+            deleted,
+        } => serde_json::json!({
+            "collection": collection,
+            "key": key,
+            "deleted": deleted,
+        }),
+        Output::StateCasResult {
+            cell,
+            success,
+            version,
+            current_value,
+            current_version,
+        } => serde_json::json!({
+            "cell": cell,
+            "success": success,
+            "version": version,
+            "currentValue": current_value.map(value_to_js),
+            "currentVersion": current_version,
+        }),
+        // Pagination metadata (#1444)
+        Output::KeysPage {
+            keys,
+            has_more,
+            cursor,
+        } => serde_json::json!({
+            "keys": keys,
+            "hasMore": has_more,
+            "cursor": cursor,
+        }),
         // For all remaining complex types, use serde serialization
         // and strip the outer variant wrapper.
         other => {
@@ -958,13 +1073,15 @@ impl Strata {
                 })
                 .map_err(to_napi_err)?
             {
-                Output::JsonListResult { keys, cursor } => Ok(serde_json::json!({
+                Output::JsonListResult { keys, cursor, has_more } => Ok(serde_json::json!({
                     "keys": keys,
                     "cursor": cursor,
+                    "hasMore": has_more,
                 })),
                 Output::Keys(keys) => Ok(serde_json::json!({
                     "keys": keys,
                     "cursor": serde_json::Value::Null,
+                    "hasMore": false,
                 })),
                 _ => Err(napi::Error::from_reason("Unexpected output for JsonList")),
             }
@@ -1558,6 +1675,27 @@ impl Strata {
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
     }
 
+    /// Get a structured snapshot of the database for agent introspection.
+    ///
+    /// Returns version, branch, spaces, follower status, per-primitive
+    /// summaries (counts, collections, graphs), configuration, and
+    /// capability flags — everything an agent needs to plan its actions.
+    #[napi]
+    pub async fn describe(&self) -> napi::Result<serde_json::Value> {
+        let inner = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let guard = lock_inner(&inner)?;
+            let branch = Some(BranchId::from(guard.current_branch()));
+            let output = guard
+                .executor()
+                .execute(Command::Describe { branch })
+                .map_err(to_napi_err)?;
+            Ok(output_to_json(output))
+        })
+        .await
+        .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
+    }
+
     /// Flush writes to disk.
     #[napi]
     pub async fn flush(&self) -> napi::Result<()> {
@@ -1756,7 +1894,7 @@ impl Strata {
                 })
                 .map_err(to_napi_err)?
             {
-                Output::Bool(deleted) => Ok(deleted),
+                Output::DeleteResult { deleted, .. } => Ok(deleted),
                 _ => Err(napi::Error::from_reason("Unexpected output for StateDelete")),
             }
         })
@@ -1880,7 +2018,16 @@ impl Strata {
                 })
                 .map_err(to_napi_err)?
             {
-                Output::Keys(keys) => Ok(serde_json::json!({ "keys": keys })),
+                Output::KeysPage { keys, has_more, cursor } => Ok(serde_json::json!({
+                    "keys": keys,
+                    "hasMore": has_more,
+                    "cursor": cursor,
+                })),
+                Output::Keys(keys) => Ok(serde_json::json!({
+                    "keys": keys,
+                    "hasMore": false,
+                    "cursor": serde_json::Value::Null,
+                })),
                 _ => Err(napi::Error::from_reason("Unexpected output for KvList")),
             }
         })

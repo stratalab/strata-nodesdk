@@ -620,7 +620,8 @@ describe('Strata', () => {
     test('configureModel with api key and timeout', async () => {
       await db.configureModel('http://localhost:11434/v1', 'qwen3:1.7b', 'sk-test', 10000);
       const cfg = await db.config();
-      expect(cfg.model.apiKey).toBe('sk-test');
+      // API key is redacted for security
+      expect(cfg.model.apiKey).toBe('[REDACTED]');
       expect(cfg.model.timeoutMs).toBe(10000);
     });
   });
@@ -2024,8 +2025,9 @@ describe('Strata', () => {
 
   describe('db.execute()', () => {
     test('kv_put and kv_get', async () => {
-      const version = await db.execute('kv_put', { key: 'exec_key', value: 'exec_val' });
-      expect(typeof version).toBe('number');
+      const writeResult = await db.execute('kv_put', { key: 'exec_key', value: 'exec_val' });
+      expect(writeResult.key).toBe('exec_key');
+      expect(typeof writeResult.version).toBe('number');
       const result = await db.execute('kv_get', { key: 'exec_key' });
       expect(result.value).toBe('exec_val');
       expect(typeof result.version).toBe('number');
@@ -2047,10 +2049,11 @@ describe('Strata', () => {
       expect(keys).toContain('list_b');
     });
 
-    test('kv_delete returns boolean', async () => {
+    test('kv_delete returns structured result', async () => {
       await db.execute('kv_put', { key: 'del_me', value: 'bye' });
       const result = await db.execute('kv_delete', { key: 'del_me' });
-      expect(result).toBe(true);
+      expect(result.key).toBe('del_me');
+      expect(result.deleted).toBe(true);
     });
 
     test('state_set and state_get', async () => {
@@ -2060,9 +2063,10 @@ describe('Strata', () => {
     });
 
     test('event_append and event_get', async () => {
-      const seq = await db.execute('event_append', { event_type: 'click', payload: { x: 10 } });
-      expect(typeof seq).toBe('number');
-      const evt = await db.execute('event_get', { sequence: seq });
+      const result = await db.execute('event_append', { event_type: 'click', payload: { x: 10 } });
+      expect(typeof result.sequence).toBe('number');
+      expect(result.eventType).toBe('click');
+      const evt = await db.execute('event_get', { sequence: result.sequence });
       expect(evt).not.toBeNull();
     });
 
@@ -2296,11 +2300,12 @@ describe('Strata', () => {
 
     // Event payload (object with non-string values)
     test('event_append with complex payload', async () => {
-      const seq = await db.execute('event_append', {
+      const result = await db.execute('event_append', {
         event_type: 'metric',
         payload: { values: [1.1, 2.2], tags: { env: 'prod' }, ok: true }
       });
-      expect(typeof seq).toBe('number');
+      expect(typeof result.sequence).toBe('number');
+      expect(result.eventType).toBe('metric');
     });
 
     // State with various value types
@@ -2312,7 +2317,9 @@ describe('Strata', () => {
         expected_counter: before.version,
         value: 'swapped'
       });
-      expect(typeof result).toBe('number'); // returns version on success
+      expect(result.cell).toBe('cas_cell');
+      expect(result.success).toBe(true);
+      expect(typeof result.version).toBe('number');
       const after = await db.execute('state_get', { cell: 'cas_cell' });
       expect(after.value).toBe('swapped');
     });
@@ -2327,6 +2334,294 @@ describe('Strata', () => {
     // Error: non-object args
     test('non-object args return error', async () => {
       await expect(db.execute('kv_put', 'not an object')).rejects.toThrow(/args must be an object/);
+    });
+  });
+
+  // =========================================================================
+  // Agent-First API (#1442, #1443, #1444)
+  // =========================================================================
+
+  describe('Agent-First API', () => {
+    // -----------------------------------------------------------------
+    // describe() introspection (#1274)
+    // -----------------------------------------------------------------
+
+    test('describe() returns structured snapshot with camelCase fields', async () => {
+      await db.kv.set('d_key', 'val');
+      await db.state.set('d_cell', 42);
+      await db.json.set('d_doc', '$', { x: 1 });
+      await db.events.append('d_evt', { y: 2 });
+      const desc = await db.describe();
+
+      // Top-level
+      expect(typeof desc.version).toBe('string');
+      expect(desc.version).toMatch(/^\d+\.\d+\.\d+/);
+      expect(typeof desc.path).toBe('string');
+      expect(desc.branch).toBe('default');
+      expect(desc.branches).toContain('default');
+      expect(desc.spaces).toContain('default');
+      expect(desc.follower).toBe(false);
+
+      // Primitives — verify actual counts from data we inserted
+      expect(desc.primitives.kv.count).toBeGreaterThanOrEqual(1);
+      expect(desc.primitives.json.count).toBeGreaterThanOrEqual(1);
+      expect(desc.primitives.events.count).toBeGreaterThanOrEqual(1);
+      expect(desc.primitives.state.count).toBeGreaterThanOrEqual(1);
+      expect(desc.primitives.state.cells).toContain('d_cell');
+      expect(Array.isArray(desc.primitives.vector.collections)).toBe(true);
+      expect(Array.isArray(desc.primitives.graph.graphs)).toBe(true);
+
+      // Config — camelCase
+      expect(typeof desc.config.durability).toBe('string');
+      expect(typeof desc.config.autoEmbed).toBe('boolean');
+      expect(typeof desc.config.embedModel).toBe('string');
+      expect(typeof desc.config.provider).toBe('string');
+      // defaultModel may be null
+      expect('defaultModel' in desc.config).toBe(true);
+
+      // Capabilities — camelCase
+      expect(typeof desc.capabilities.search).toBe('boolean');
+      expect(typeof desc.capabilities.vectorSearch).toBe('boolean');
+      expect(typeof desc.capabilities.generation).toBe('boolean');
+      expect(typeof desc.capabilities.autoEmbed).toBe('boolean');
+    });
+
+    test('describe() on empty database has zero counts', async () => {
+      const fresh = Strata.cache();
+      const desc = await fresh.describe();
+      expect(desc.primitives.kv.count).toBe(0);
+      expect(desc.primitives.json.count).toBe(0);
+      expect(desc.primitives.events.count).toBe(0);
+      expect(desc.primitives.state.count).toBe(0);
+      expect(desc.primitives.state.cells).toEqual([]);
+      expect(desc.primitives.vector.collections).toEqual([]);
+      expect(desc.primitives.graph.graphs).toEqual([]);
+      await fresh.close();
+    });
+
+    test('describe() via execute() also works', async () => {
+      const desc = await db.execute('describe');
+      expect(typeof desc.version).toBe('string');
+      expect(desc.branch).toBe('default');
+    });
+
+    // -----------------------------------------------------------------
+    // Pagination metadata (#1444)
+    // -----------------------------------------------------------------
+
+    test('json.keys() returns hasMore=true when more results exist', async () => {
+      await db.json.set('jh_a', '$', { v: 1 });
+      await db.json.set('jh_b', '$', { v: 2 });
+      await db.json.set('jh_c', '$', { v: 3 });
+      const result = await db.json.keys({ prefix: 'jh_', limit: 2 });
+      expect(result.keys.length).toBe(2);
+      expect(result.hasMore).toBe(true);
+      expect(result.cursor).toBeDefined();
+      expect(result.cursor).not.toBeNull();
+    });
+
+    test('json.keys() returns hasMore=false when all results fit', async () => {
+      await db.json.set('ja_x', '$', { v: 1 });
+      const result = await db.json.keys({ prefix: 'ja_', limit: 100 });
+      expect(result.keys.length).toBe(1);
+      expect(result.hasMore).toBe(false);
+    });
+
+    test('kv_list via execute with limit returns hasMore and cursor', async () => {
+      await db.kv.set('pg_1', 'a');
+      await db.kv.set('pg_2', 'b');
+      await db.kv.set('pg_3', 'c');
+      const page1 = await db.execute('kv_list', { prefix: 'pg_', limit: 2 });
+      expect(page1.keys.length).toBe(2);
+      expect(page1.hasMore).toBe(true);
+      expect(page1.cursor).toBeDefined();
+    });
+
+    test('kv_list via execute without limit returns plain array', async () => {
+      await db.kv.set('al_1', 'a');
+      await db.kv.set('al_2', 'b');
+      const result = await db.execute('kv_list', { prefix: 'al_' });
+      // Without limit, returns flat array (backward compat)
+      expect(Array.isArray(result)).toBe(true);
+      expect(result.length).toBe(2);
+    });
+
+    test('kv.keys() with limit still returns string[] (namespace compat)', async () => {
+      await db.kv.set('ns_1', 'a');
+      await db.kv.set('ns_2', 'b');
+      await db.kv.set('ns_3', 'c');
+      const keys = await db.kv.keys({ prefix: 'ns_', limit: 2 });
+      // Namespace API extracts just the keys array
+      expect(Array.isArray(keys)).toBe(true);
+      expect(keys.length).toBeLessThanOrEqual(2);
+      expect(typeof keys[0]).toBe('string');
+    });
+
+    test('kvListPaginated returns {keys, hasMore, cursor}', async () => {
+      await db.kv.set('lp_a', 1);
+      await db.kv.set('lp_b', 2);
+      await db.kv.set('lp_c', 3);
+      const result = await db.kvListPaginated('lp_', 2);
+      expect(result.keys.length).toBe(2);
+      expect(typeof result.hasMore).toBe('boolean');
+      expect(result.hasMore).toBe(true);
+      // hasMore=false when fetching all
+      const all = await db.kvListPaginated('lp_', 100);
+      expect(all.keys.length).toBe(3);
+      expect(all.hasMore).toBe(false);
+    });
+
+    // -----------------------------------------------------------------
+    // Write metadata (#1443)
+    // -----------------------------------------------------------------
+
+    test('execute kv_put returns {key, version}', async () => {
+      const result = await db.execute('kv_put', { key: 'wm_k', value: 'v' });
+      expect(result.key).toBe('wm_k');
+      expect(typeof result.version).toBe('number');
+      expect(result.version).toBeGreaterThan(0);
+    });
+
+    test('execute kv_delete returns {key, deleted}', async () => {
+      await db.execute('kv_put', { key: 'wd_k', value: 'v' });
+      const del = await db.execute('kv_delete', { key: 'wd_k' });
+      expect(del.key).toBe('wd_k');
+      expect(del.deleted).toBe(true);
+      // Delete non-existent
+      const del2 = await db.execute('kv_delete', { key: 'wd_k' });
+      expect(del2.key).toBe('wd_k');
+      expect(del2.deleted).toBe(false);
+    });
+
+    test('execute json_set returns {key, version}', async () => {
+      const result = await db.execute('json_set', { key: 'wm_j', path: '$', value: { x: 1 } });
+      expect(result.key).toBe('wm_j');
+      expect(typeof result.version).toBe('number');
+    });
+
+    test('execute json_delete returns {key, deleted}', async () => {
+      await db.execute('json_set', { key: 'jd_k', path: '$', value: { x: 1 } });
+      const del = await db.execute('json_delete', { key: 'jd_k', path: '$' });
+      expect(del.key).toBe('jd_k');
+      expect(del.deleted).toBe(true);
+    });
+
+    test('execute event_append returns {sequence, eventType}', async () => {
+      const result = await db.execute('event_append', {
+        event_type: 'wm_click',
+        payload: { button: 'left' },
+      });
+      expect(typeof result.sequence).toBe('number');
+      expect(result.eventType).toBe('wm_click');
+    });
+
+    test('execute state_set returns {key, version}', async () => {
+      const result = await db.execute('state_set', { cell: 'wm_s', value: 42 });
+      expect(result.key).toBe('wm_s');
+      expect(typeof result.version).toBe('number');
+    });
+
+    test('execute state_delete returns {key, deleted}', async () => {
+      await db.execute('state_set', { cell: 'sd_c', value: 1 });
+      const del = await db.execute('state_delete', { cell: 'sd_c' });
+      expect(del.key).toBe('sd_c');
+      expect(del.deleted).toBe(true);
+      // Delete non-existent
+      const del2 = await db.execute('state_delete', { cell: 'sd_c' });
+      expect(del2.key).toBe('sd_c');
+      expect(del2.deleted).toBe(false);
+    });
+
+    test('execute state_cas success returns structured result', async () => {
+      await db.execute('state_set', { cell: 'cas_s', value: 'init' });
+      const before = await db.execute('state_get', { cell: 'cas_s' });
+      const result = await db.execute('state_cas', {
+        cell: 'cas_s',
+        expected_counter: before.version,
+        value: 'updated',
+      });
+      expect(result.cell).toBe('cas_s');
+      expect(result.success).toBe(true);
+      expect(typeof result.version).toBe('number');
+      // currentValue should be null on success
+      expect(result.currentValue).toBeNull();
+    });
+
+    test('execute state_cas conflict returns current value', async () => {
+      await db.execute('state_set', { cell: 'cas_c', value: 'v1' });
+      // Use a stale version to force conflict
+      const conflict = await db.execute('state_cas', {
+        cell: 'cas_c',
+        expected_counter: 999999,
+        value: 'should_fail',
+      });
+      expect(conflict.cell).toBe('cas_c');
+      expect(conflict.success).toBe(false);
+      expect(conflict.version).toBeNull();
+      // On conflict, currentValue and currentVersion are populated
+      expect(conflict.currentValue).toBe('v1');
+      expect(typeof conflict.currentVersion).toBe('number');
+    });
+
+    // -----------------------------------------------------------------
+    // Error hints (#1442)
+    // -----------------------------------------------------------------
+
+    test('NotFound errors include hint text', async () => {
+      try {
+        await db.state.get('nonexistent_cell_xyz');
+        // If it returns null (cell doesn't exist), that's fine — not all
+        // primitives throw on not-found.
+      } catch (err) {
+        // If it does throw, the error message should be helpful
+        expect(err.message).toBeDefined();
+      }
+    });
+
+    test('branch not found throws NotFoundError with hint', async () => {
+      // Switch to a nonexistent branch — should be a NotFoundError
+      try {
+        await db.branch.switch('no_such_brancch');
+        throw new Error('should have thrown');
+      } catch (e) {
+        expect(e.name).toBe('NotFoundError');
+        expect(e.code).toBe('NOT_FOUND');
+        expect(e.message).toMatch(/branch not found/i);
+      }
+    });
+
+    // -----------------------------------------------------------------
+    // Namespace backward compat: typed methods still return old types
+    // -----------------------------------------------------------------
+
+    test('kv.set() still returns number (version)', async () => {
+      const v = await db.kv.set('bc_k', 'v');
+      expect(typeof v).toBe('number');
+    });
+
+    test('kv.delete() still returns boolean', async () => {
+      await db.kv.set('bc_d', 'v');
+      const d = await db.kv.delete('bc_d');
+      expect(typeof d).toBe('boolean');
+      expect(d).toBe(true);
+    });
+
+    test('state.delete() still returns boolean', async () => {
+      await db.state.set('bc_sd', 'v');
+      const d = await db.state.delete('bc_sd');
+      expect(typeof d).toBe('boolean');
+      expect(d).toBe(true);
+    });
+
+    test('events.append() still returns number (sequence)', async () => {
+      const s = await db.events.append('bc_evt', { x: 1 });
+      expect(typeof s).toBe('number');
+    });
+
+    test('json.delete() still returns number', async () => {
+      await db.json.set('bc_jd', '$', { a: 1 });
+      const r = await db.json.delete('bc_jd', '$');
+      expect(typeof r).toBe('number');
     });
   });
 

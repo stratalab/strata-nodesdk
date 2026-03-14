@@ -46,6 +46,14 @@ export interface VersionedValue {
 export interface JsonListResult {
   keys: string[];
   cursor?: string;
+  hasMore: boolean;
+}
+
+/** KV list result with pagination metadata (returned by kvListPaginated) */
+export interface KvListResult {
+  keys: string[];
+  hasMore: boolean;
+  cursor?: string;
 }
 
 /** Vector collection information */
@@ -114,6 +122,63 @@ export interface DatabaseInfo {
   uptimeSecs: number;
   branchCount: number;
   totalKeys: number;
+}
+
+/** Structured database snapshot for agent introspection. */
+export interface DescribeResult {
+  version: string;
+  path: string;
+  branch: string;
+  branches: string[];
+  spaces: string[];
+  follower: boolean;
+  primitives: PrimitiveSummary;
+  config: ConfigSummary;
+  capabilities: CapabilitySummary;
+}
+
+/** Per-primitive summaries. */
+export interface PrimitiveSummary {
+  kv: { count: number };
+  json: { count: number };
+  events: { count: number };
+  state: { count: number; cells: string[] };
+  vector: { collections: VectorCollectionSummary[] };
+  graph: { graphs: GraphSummaryEntry[] };
+}
+
+/** Summary of a single vector collection. */
+export interface VectorCollectionSummary {
+  name: string;
+  dimension: number;
+  metric: string;
+  count: number;
+}
+
+/** Summary of a single graph. */
+export interface GraphSummaryEntry {
+  name: string;
+  nodes: number;
+  edges: number;
+  objectTypes?: string[];
+  linkTypes?: string[];
+}
+
+/** Configuration summary (no API keys). */
+export interface ConfigSummary {
+  provider: string;
+  defaultModel?: string;
+  autoEmbed: boolean;
+  embedModel: string;
+  durability: string;
+}
+
+/** Capability flags. */
+export interface CapabilitySummary {
+  search: boolean;
+  vectorSearch: boolean;
+  generation: boolean;
+  autoEmbed: boolean;
 }
 
 /** Branch metadata with version info */
@@ -912,6 +977,8 @@ export class Strata {
 
   ping(): Promise<string>;
   info(): Promise<DatabaseInfo>;
+  /** Get a structured snapshot of the database for agent introspection. */
+  describe(): Promise<DescribeResult>;
   flush(): Promise<void>;
   compact(): Promise<void>;
   close(): Promise<void>;
