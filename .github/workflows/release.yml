@@ -55,7 +55,7 @@ jobs:
         run: npm install
 
       - name: Build
-        run: npm run build -- --target ${{ matrix.settings.target }} ${{ matrix.settings.no_default_features && '--no-default-features' || '' }}
+        run: npm run build -- --target ${{ matrix.settings.target }} ${{ matrix.settings.no_default_features && '--cargo-flags --no-default-features' || '' }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
