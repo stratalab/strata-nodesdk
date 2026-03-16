@@ -1014,7 +1014,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 [[package]]
 name = "strata-concurrency"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=main#a5deb47f8814816dda454be575d9c2c679031f45"
+source = "git+https://github.com/stratalab/strata-core?branch=main#d4eeda523eeb65b4b19b98eb74931fd41ecfca2e"
 dependencies = [
  "chrono",
  "dashmap",
@@ -1031,7 +1031,7 @@ dependencies = [
 [[package]]
 name = "strata-core"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=main#a5deb47f8814816dda454be575d9c2c679031f45"
+source = "git+https://github.com/stratalab/strata-core?branch=main#d4eeda523eeb65b4b19b98eb74931fd41ecfca2e"
 dependencies = [
  "bincode",
  "serde",
@@ -1043,7 +1043,7 @@ dependencies = [
 [[package]]
 name = "strata-durability"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=main#a5deb47f8814816dda454be575d9c2c679031f45"
+source = "git+https://github.com/stratalab/strata-core?branch=main#d4eeda523eeb65b4b19b98eb74931fd41ecfca2e"
 dependencies = [
  "aes-gcm",
  "crc32fast",
@@ -1066,7 +1066,7 @@ dependencies = [
 [[package]]
 name = "strata-engine"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=main#a5deb47f8814816dda454be575d9c2c679031f45"
+source = "git+https://github.com/stratalab/strata-core?branch=main#d4eeda523eeb65b4b19b98eb74931fd41ecfca2e"
 dependencies = [
  "base64 0.21.7",
  "byteorder",
@@ -1096,7 +1096,7 @@ dependencies = [
 [[package]]
 name = "strata-executor"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=main#a5deb47f8814816dda454be575d9c2c679031f45"
+source = "git+https://github.com/stratalab/strata-core?branch=main#d4eeda523eeb65b4b19b98eb74931fd41ecfca2e"
 dependencies = [
  "base64 0.21.7",
  "chrono",
@@ -1117,7 +1117,7 @@ dependencies = [
 [[package]]
 name = "strata-inference"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=main#a5deb47f8814816dda454be575d9c2c679031f45"
+source = "git+https://github.com/stratalab/strata-core?branch=main#d4eeda523eeb65b4b19b98eb74931fd41ecfca2e"
 dependencies = [
  "cmake",
  "sha2",
@@ -1129,7 +1129,7 @@ dependencies = [
 [[package]]
 name = "strata-intelligence"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=main#a5deb47f8814816dda454be575d9c2c679031f45"
+source = "git+https://github.com/stratalab/strata-core?branch=main#d4eeda523eeb65b4b19b98eb74931fd41ecfca2e"
 dependencies = [
  "strata-core",
  "strata-engine",
@@ -1140,7 +1140,7 @@ dependencies = [
 [[package]]
 name = "strata-search"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=main#a5deb47f8814816dda454be575d9c2c679031f45"
+source = "git+https://github.com/stratalab/strata-core?branch=main#d4eeda523eeb65b4b19b98eb74931fd41ecfca2e"
 dependencies = [
  "rayon",
  "serde",
@@ -1153,7 +1153,7 @@ dependencies = [
 [[package]]
 name = "strata-security"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=main#a5deb47f8814816dda454be575d9c2c679031f45"
+source = "git+https://github.com/stratalab/strata-core?branch=main#d4eeda523eeb65b4b19b98eb74931fd41ecfca2e"
 dependencies = [
  "serde",
  "zeroize",
@@ -1162,7 +1162,7 @@ dependencies = [
 [[package]]
 name = "strata-storage"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=main#a5deb47f8814816dda454be575d9c2c679031f45"
+source = "git+https://github.com/stratalab/strata-core?branch=main#d4eeda523eeb65b4b19b98eb74931fd41ecfca2e"
 dependencies = [
  "dashmap",
  "rustc-hash",
@@ -1173,7 +1173,7 @@ dependencies = [
 [[package]]
 name = "stratadb"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=main#a5deb47f8814816dda454be575d9c2c679031f45"
+source = "git+https://github.com/stratalab/strata-core?branch=main#d4eeda523eeb65b4b19b98eb74931fd41ecfca2e"
 dependencies = [
  "serde_json",
  "strata-executor",
@@ -1183,7 +1183,7 @@ dependencies = [
 
 [[package]]
 name = "stratadb-node"
-version = "0.13.1"
+version = "0.15.0"
 dependencies = [
  "napi",
  "napi-build",
