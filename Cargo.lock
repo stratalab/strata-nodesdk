@@ -164,6 +164,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmake"
+version = "0.1.57"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75443c44cd6b379beb8c5b45d85d0773baf31cce901fe7bb252f4eff3008ef7d"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "convert_case"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1005,7 +1014,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 [[package]]
 name = "strata-concurrency"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=describe-endpoint#1b2be64a40b0fe46efa498544cf08c2dc3ab70a3"
+source = "git+https://github.com/stratalab/strata-core?branch=main#69229d291cbb10ed2079b3d201ae0c1836f5b132"
 dependencies = [
  "chrono",
  "dashmap",
@@ -1022,7 +1031,7 @@ dependencies = [
 [[package]]
 name = "strata-core"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=describe-endpoint#1b2be64a40b0fe46efa498544cf08c2dc3ab70a3"
+source = "git+https://github.com/stratalab/strata-core?branch=main#69229d291cbb10ed2079b3d201ae0c1836f5b132"
 dependencies = [
  "bincode",
  "serde",
@@ -1034,7 +1043,7 @@ dependencies = [
 [[package]]
 name = "strata-durability"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=describe-endpoint#1b2be64a40b0fe46efa498544cf08c2dc3ab70a3"
+source = "git+https://github.com/stratalab/strata-core?branch=main#69229d291cbb10ed2079b3d201ae0c1836f5b132"
 dependencies = [
  "aes-gcm",
  "crc32fast",
@@ -1057,10 +1066,11 @@ dependencies = [
 [[package]]
 name = "strata-engine"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=describe-endpoint#1b2be64a40b0fe46efa498544cf08c2dc3ab70a3"
+source = "git+https://github.com/stratalab/strata-core?branch=main#69229d291cbb10ed2079b3d201ae0c1836f5b132"
 dependencies = [
  "base64 0.21.7",
  "byteorder",
+ "chrono",
  "dashmap",
  "fs2",
  "memmap2",
@@ -1086,7 +1096,7 @@ dependencies = [
 [[package]]
 name = "strata-executor"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=describe-endpoint#1b2be64a40b0fe46efa498544cf08c2dc3ab70a3"
+source = "git+https://github.com/stratalab/strata-core?branch=main#69229d291cbb10ed2079b3d201ae0c1836f5b132"
 dependencies = [
  "base64 0.21.7",
  "chrono",
@@ -1107,8 +1117,9 @@ dependencies = [
 [[package]]
 name = "strata-inference"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=describe-endpoint#1b2be64a40b0fe46efa498544cf08c2dc3ab70a3"
+source = "git+https://github.com/stratalab/strata-core?branch=main#69229d291cbb10ed2079b3d201ae0c1836f5b132"
 dependencies = [
+ "cmake",
  "sha2",
  "thiserror",
  "tracing",
@@ -1118,7 +1129,7 @@ dependencies = [
 [[package]]
 name = "strata-intelligence"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=describe-endpoint#1b2be64a40b0fe46efa498544cf08c2dc3ab70a3"
+source = "git+https://github.com/stratalab/strata-core?branch=main#69229d291cbb10ed2079b3d201ae0c1836f5b132"
 dependencies = [
  "strata-core",
  "strata-engine",
@@ -1129,7 +1140,7 @@ dependencies = [
 [[package]]
 name = "strata-search"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=describe-endpoint#1b2be64a40b0fe46efa498544cf08c2dc3ab70a3"
+source = "git+https://github.com/stratalab/strata-core?branch=main#69229d291cbb10ed2079b3d201ae0c1836f5b132"
 dependencies = [
  "rayon",
  "serde",
@@ -1142,7 +1153,7 @@ dependencies = [
 [[package]]
 name = "strata-security"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=describe-endpoint#1b2be64a40b0fe46efa498544cf08c2dc3ab70a3"
+source = "git+https://github.com/stratalab/strata-core?branch=main#69229d291cbb10ed2079b3d201ae0c1836f5b132"
 dependencies = [
  "serde",
  "zeroize",
@@ -1151,7 +1162,7 @@ dependencies = [
 [[package]]
 name = "strata-storage"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=describe-endpoint#1b2be64a40b0fe46efa498544cf08c2dc3ab70a3"
+source = "git+https://github.com/stratalab/strata-core?branch=main#69229d291cbb10ed2079b3d201ae0c1836f5b132"
 dependencies = [
  "dashmap",
  "rustc-hash",
@@ -1162,7 +1173,7 @@ dependencies = [
 [[package]]
 name = "stratadb"
 version = "0.6.0"
-source = "git+https://github.com/stratalab/strata-core?branch=describe-endpoint#1b2be64a40b0fe46efa498544cf08c2dc3ab70a3"
+source = "git+https://github.com/stratalab/strata-core?branch=main#69229d291cbb10ed2079b3d201ae0c1836f5b132"
 dependencies = [
  "serde_json",
  "strata-executor",

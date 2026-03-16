@@ -15,8 +15,8 @@ use stratadb::{
     BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry, BatchStateEntry, BatchVectorEntry,
     BranchExportResult, BranchId, BranchImportResult, BulkGraphEdge, BulkGraphNode,
     BundleValidateResult, CollectionInfo, Command, DescribeResult, DistanceMetric,
-    Error as StrataError, FilterOp, GraphAnalyticsF64Result, GraphAnalyticsU64Result,
-    GraphBfsResult, MergeStrategy, MetadataFilter, OpenOptions, Output, SearchQuery, Session,
+    Error as StrataError, FilterOp, GraphBfsResult, GraphGroupSummary, GraphScoreSummary,
+    MergeStrategy, MetadataFilter, OpenOptions, Output, SearchQuery, Session,
     Strata as RustStrata, TimeRangeInput, TxnOptions, Value, VersionedBranchInfo, VersionedValue,
 };
 
@@ -1400,19 +1400,10 @@ impl Strata {
             .transpose()?;
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::BranchCreate {
-                    branch_id: Some(branch),
-                    metadata: meta_val,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::BranchWithVersion { .. } => Ok(()),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for BranchCreate",
-                )),
-            }
+            guard
+                .branch_create(Some(branch), meta_val)
+                .map(|_| ())
+                .map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -1445,26 +1436,18 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::BranchList {
-                    state: None,
-                    limit: limit.map(|l| l as u64),
-                    offset: offset.map(|o| o as u64),
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::BranchInfoList(branches) => {
-                    let names: Vec<serde_json::Value> = branches
-                        .into_iter()
-                        .map(|b| serde_json::Value::String(b.info.id.as_str().to_string()))
-                        .collect();
-                    Ok(serde_json::Value::Array(names))
-                }
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for BranchList",
-                )),
-            }
+            let branches = guard
+                .branch_list(
+                    None,
+                    limit.map(|l| l as u64),
+                    offset.map(|o| o as u64),
+                )
+                .map_err(to_napi_err)?;
+            let names: Vec<serde_json::Value> = branches
+                .into_iter()
+                .map(|b| serde_json::Value::String(b.info.id.as_str().to_string()))
+                .collect();
+            Ok(serde_json::Value::Array(names))
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -1885,18 +1868,7 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::StateDelete {
-                    branch: None,
-                    space: None,
-                    cell,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::DeleteResult { deleted, .. } => Ok(deleted),
-                _ => Err(napi::Error::from_reason("Unexpected output for StateDelete")),
-            }
+            guard.state_delete(&cell).map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -2326,15 +2298,13 @@ impl Strata {
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
             guard
-                .executor()
-                .execute(Command::ConfigureModel {
-                    endpoint,
-                    model,
-                    api_key,
-                    timeout_ms: timeout_ms.map(|ms| ms as u64),
-                })
-                .map_err(to_napi_err)?;
-            Ok(())
+                .configure_model(
+                    &endpoint,
+                    &model,
+                    api_key.as_deref(),
+                    timeout_ms.map(|ms| ms as u64),
+                )
+                .map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -2390,8 +2360,8 @@ impl Strata {
                 })
                 .map_err(to_napi_err)?
             {
-                Output::SearchResults(results) => {
-                    let arr: Vec<serde_json::Value> = results
+                Output::SearchResults { hits, .. } => {
+                    let arr: Vec<serde_json::Value> = hits
                         .into_iter()
                         .map(|hit| {
                             serde_json::json!({
@@ -2936,16 +2906,7 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::ConfigureSet { key, value })
-                .map_err(to_napi_err)?
-            {
-                Output::Unit => Ok(()),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for ConfigureSet",
-                )),
-            }
+            guard.config_set(&key, &value).map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -2957,16 +2918,7 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::ConfigureGetKey { key })
-                .map_err(to_napi_err)?
-            {
-                Output::ConfigValue(v) => Ok(v),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for ConfigureGetKey",
-                )),
-            }
+            guard.config_get(&key).map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -2982,14 +2934,8 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::Embed { text })
-                .map_err(to_napi_err)?
-            {
-                Output::Embedding(vec) => Ok(vec.into_iter().map(|f| f as f64).collect()),
-                _ => Err(napi::Error::from_reason("Unexpected output for Embed")),
-            }
+            let vec = guard.embed(&text).map_err(to_napi_err)?;
+            Ok(vec.into_iter().map(|f| f as f64).collect())
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -3001,19 +2947,12 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::EmbedBatch { texts })
-                .map_err(to_napi_err)?
-            {
-                Output::Embeddings(vecs) => Ok(vecs
-                    .into_iter()
-                    .map(|v| v.into_iter().map(|f| f as f64).collect())
-                    .collect()),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for EmbedBatch",
-                )),
-            }
+            let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+            let vecs = guard.embed_batch(&refs).map_err(to_napi_err)?;
+            Ok(vecs
+                .into_iter()
+                .map(|v| v.into_iter().map(|f| f as f64).collect())
+                .collect())
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -3025,25 +2964,17 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::EmbedStatus)
-                .map_err(to_napi_err)?
-            {
-                Output::EmbedStatus(info) => Ok(serde_json::json!({
-                    "autoEmbed": info.auto_embed,
-                    "batchSize": info.batch_size,
-                    "pending": info.pending,
-                    "totalQueued": info.total_queued,
-                    "totalEmbedded": info.total_embedded,
-                    "totalFailed": info.total_failed,
-                    "schedulerQueueDepth": info.scheduler_queue_depth,
-                    "schedulerActiveTasks": info.scheduler_active_tasks,
-                })),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for EmbedStatus",
-                )),
-            }
+            let info = guard.embed_status().map_err(to_napi_err)?;
+            Ok(serde_json::json!({
+                "autoEmbed": info.auto_embed,
+                "batchSize": info.batch_size,
+                "pending": info.pending,
+                "totalQueued": info.total_queued,
+                "totalEmbedded": info.total_embedded,
+                "totalFailed": info.total_failed,
+                "schedulerQueueDepth": info.scheduler_queue_depth,
+                "schedulerActiveTasks": info.scheduler_active_tasks,
+            }))
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -3325,21 +3256,13 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::DurabilityCounters)
-                .map_err(to_napi_err)?
-            {
-                Output::DurabilityCounters(counters) => Ok(serde_json::json!({
-                    "walAppends": counters.wal_appends,
-                    "syncCalls": counters.sync_calls,
-                    "bytesWritten": counters.bytes_written,
-                    "syncNanos": counters.sync_nanos,
-                })),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for DurabilityCounters",
-                )),
-            }
+            let counters = guard.durability_counters().map_err(to_napi_err)?;
+            Ok(serde_json::json!({
+                "walAppends": counters.wal_appends,
+                "syncCalls": counters.sync_calls,
+                "bytesWritten": counters.bytes_written,
+                "syncNanos": counters.sync_nanos,
+            }))
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -3359,20 +3282,9 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphCreate {
-                    branch: None,
-                    graph,
-                    cascade_policy,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Unit => Ok(()),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphCreate",
-                )),
-            }
+            guard
+                .graph_create_with_policy(&graph, cascade_policy.as_deref())
+                .map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -3384,19 +3296,7 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphDelete {
-                    branch: None,
-                    graph,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Unit => Ok(()),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphDelete",
-                )),
-            }
+            guard.graph_delete(&graph).map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -3408,16 +3308,7 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphList { branch: None })
-                .map_err(to_napi_err)?
-            {
-                Output::Keys(keys) => Ok(keys),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphList",
-                )),
-            }
+            guard.graph_list().map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -3429,19 +3320,9 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphGetMeta {
-                    branch: None,
-                    graph,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Maybe(None) => Ok(serde_json::Value::Null),
-                Output::Maybe(Some(v)) => Ok(value_to_js(v)),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphGetMeta",
-                )),
+            match guard.graph_get_meta(&graph).map_err(to_napi_err)? {
+                Some(v) => Ok(value_to_js(v)),
+                None => Ok(serde_json::Value::Null),
             }
         })
         .await
@@ -3468,23 +3349,15 @@ impl Strata {
             .transpose()?;
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphAddNode {
-                    branch: None,
-                    graph,
-                    node_id,
-                    entity_ref,
-                    properties: props,
-                    object_type,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Unit => Ok(()),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphAddNode",
-                )),
-            }
+            guard
+                .graph_add_node_typed(
+                    &graph,
+                    &node_id,
+                    entity_ref.as_deref(),
+                    props,
+                    object_type.as_deref(),
+                )
+                .map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -3500,20 +3373,9 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphGetNode {
-                    branch: None,
-                    graph,
-                    node_id,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Maybe(None) => Ok(serde_json::Value::Null),
-                Output::Maybe(Some(v)) => Ok(value_to_js(v)),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphGetNode",
-                )),
+            match guard.graph_get_node(&graph, &node_id).map_err(to_napi_err)? {
+                Some(v) => Ok(value_to_js(v)),
+                None => Ok(serde_json::Value::Null),
             }
         })
         .await
@@ -3530,20 +3392,7 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphRemoveNode {
-                    branch: None,
-                    graph,
-                    node_id,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Unit => Ok(()),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphRemoveNode",
-                )),
-            }
+            guard.graph_remove_node(&graph, &node_id).map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -3555,19 +3404,7 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphListNodes {
-                    branch: None,
-                    graph,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Keys(keys) => Ok(keys),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphListNodes",
-                )),
-            }
+            guard.graph_list_nodes(&graph).map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -3584,24 +3421,13 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphListNodesPaginated {
-                    branch: None,
-                    graph,
-                    limit: limit as usize,
-                    cursor,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::GraphPage { items, next_cursor } => Ok(serde_json::json!({
-                    "items": items,
-                    "nextCursor": next_cursor,
-                })),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphListNodesPaginated",
-                )),
-            }
+            let (items, next_cursor) = guard
+                .graph_list_nodes_paginated(&graph, limit as usize, cursor.as_deref())
+                .map_err(to_napi_err)?;
+            Ok(serde_json::json!({
+                "items": items,
+                "nextCursor": next_cursor,
+            }))
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -3628,24 +3454,9 @@ impl Strata {
             .transpose()?;
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphAddEdge {
-                    branch: None,
-                    graph,
-                    src,
-                    dst,
-                    edge_type,
-                    weight,
-                    properties: props,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Unit => Ok(()),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphAddEdge",
-                )),
-            }
+            guard
+                .graph_add_edge(&graph, &src, &dst, &edge_type, weight, props)
+                .map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -3663,22 +3474,9 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphRemoveEdge {
-                    branch: None,
-                    graph,
-                    src,
-                    dst,
-                    edge_type,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Unit => Ok(()),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphRemoveEdge",
-                )),
-            }
+            guard
+                .graph_remove_edge(&graph, &src, &dst, &edge_type)
+                .map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -3696,34 +3494,21 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphNeighbors {
-                    branch: None,
-                    graph,
-                    node_id,
-                    direction,
-                    edge_type,
+            let dir = direction.as_deref().unwrap_or("outgoing");
+            let neighbors = guard
+                .graph_neighbors(&graph, &node_id, dir, edge_type.as_deref())
+                .map_err(to_napi_err)?;
+            let arr: Vec<serde_json::Value> = neighbors
+                .into_iter()
+                .map(|n| {
+                    serde_json::json!({
+                        "nodeId": n.node_id,
+                        "edgeType": n.edge_type,
+                        "weight": n.weight,
+                    })
                 })
-                .map_err(to_napi_err)?
-            {
-                Output::GraphNeighbors(neighbors) => {
-                    let arr: Vec<serde_json::Value> = neighbors
-                        .into_iter()
-                        .map(|n| {
-                            serde_json::json!({
-                                "nodeId": n.node_id,
-                                "edgeType": n.edge_type,
-                                "weight": n.weight,
-                            })
-                        })
-                        .collect();
-                    Ok(serde_json::Value::Array(arr))
-                }
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphNeighbors",
-                )),
-            }
+                .collect();
+            Ok(serde_json::Value::Array(arr))
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -3858,24 +3643,17 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphBfs {
-                    branch: None,
-                    graph,
-                    start,
-                    max_depth: max_depth as usize,
-                    max_nodes: max_nodes.map(|n| n as usize),
+            let result = guard
+                .graph_bfs(
+                    &graph,
+                    &start,
+                    max_depth as usize,
+                    max_nodes.map(|n| n as usize),
                     edge_types,
-                    direction,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::GraphBfs(result) => Ok(graph_bfs_result_to_js(result)),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphBfs",
-                )),
-            }
+                    direction.as_deref(),
+                )
+                .map_err(to_napi_err)?;
+            Ok(graph_bfs_result_to_js(result))
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -3896,20 +3674,9 @@ impl Strata {
         let def = js_to_value_checked(definition, 0)?;
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphDefineObjectType {
-                    branch: None,
-                    graph,
-                    definition: def,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Unit => Ok(()),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphDefineObjectType",
-                )),
-            }
+            guard
+                .graph_define_object_type(&graph, def)
+                .map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -3925,20 +3692,9 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphGetObjectType {
-                    branch: None,
-                    graph,
-                    name,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Maybe(None) => Ok(serde_json::Value::Null),
-                Output::Maybe(Some(v)) => Ok(value_to_js(v)),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphGetObjectType",
-                )),
+            match guard.graph_get_object_type(&graph, &name).map_err(to_napi_err)? {
+                Some(v) => Ok(value_to_js(v)),
+                None => Ok(serde_json::Value::Null),
             }
         })
         .await
@@ -3954,19 +3710,7 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphListObjectTypes {
-                    branch: None,
-                    graph,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Keys(keys) => Ok(keys),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphListObjectTypes",
-                )),
-            }
+            guard.graph_list_object_types(&graph).map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -3982,20 +3726,7 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphDeleteObjectType {
-                    branch: None,
-                    graph,
-                    name,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Unit => Ok(()),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphDeleteObjectType",
-                )),
-            }
+            guard.graph_delete_object_type(&graph, &name).map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -4012,20 +3743,7 @@ impl Strata {
         let def = js_to_value_checked(definition, 0)?;
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphDefineLinkType {
-                    branch: None,
-                    graph,
-                    definition: def,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Unit => Ok(()),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphDefineLinkType",
-                )),
-            }
+            guard.graph_define_link_type(&graph, def).map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -4041,20 +3759,9 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphGetLinkType {
-                    branch: None,
-                    graph,
-                    name,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Maybe(None) => Ok(serde_json::Value::Null),
-                Output::Maybe(Some(v)) => Ok(value_to_js(v)),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphGetLinkType",
-                )),
+            match guard.graph_get_link_type(&graph, &name).map_err(to_napi_err)? {
+                Some(v) => Ok(value_to_js(v)),
+                None => Ok(serde_json::Value::Null),
             }
         })
         .await
@@ -4070,19 +3777,7 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphListLinkTypes {
-                    branch: None,
-                    graph,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Keys(keys) => Ok(keys),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphListLinkTypes",
-                )),
-            }
+            guard.graph_list_link_types(&graph).map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -4098,20 +3793,7 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphDeleteLinkType {
-                    branch: None,
-                    graph,
-                    name,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Unit => Ok(()),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphDeleteLinkType",
-                )),
-            }
+            guard.graph_delete_link_type(&graph, &name).map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -4123,19 +3805,7 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphFreezeOntology {
-                    branch: None,
-                    graph,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Unit => Ok(()),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphFreezeOntology",
-                )),
-            }
+            guard.graph_freeze_ontology(&graph).map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -4150,19 +3820,9 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphOntologyStatus {
-                    branch: None,
-                    graph,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Maybe(None) => Ok(serde_json::Value::Null),
-                Output::Maybe(Some(v)) => Ok(value_to_js(v)),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphOntologyStatus",
-                )),
+            match guard.graph_ontology_status(&graph).map_err(to_napi_err)? {
+                Some(v) => Ok(value_to_js(v)),
+                None => Ok(serde_json::Value::Null),
             }
         })
         .await
@@ -4178,19 +3838,9 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphOntologySummary {
-                    branch: None,
-                    graph,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Maybe(None) => Ok(serde_json::Value::Null),
-                Output::Maybe(Some(v)) => Ok(value_to_js(v)),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphOntologySummary",
-                )),
+            match guard.graph_ontology_summary(&graph).map_err(to_napi_err)? {
+                Some(v) => Ok(value_to_js(v)),
+                None => Ok(serde_json::Value::Null),
             }
         })
         .await
@@ -4234,20 +3884,9 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphNodesByType {
-                    branch: None,
-                    graph,
-                    object_type,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::Keys(keys) => Ok(keys),
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphNodesByType",
-                )),
-            }
+            guard
+                .graph_nodes_by_type(&graph, &object_type)
+                .map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -4263,21 +3902,8 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphWcc {
-                    branch: None,
-                    graph,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::GraphAnalyticsU64(result) => {
-                    Ok(graph_analytics_u64_to_js(result))
-                }
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphWcc",
-                )),
-            }
+            let result = guard.graph_wcc(&graph, None, None).map_err(to_napi_err)?;
+            graph_group_summary_to_js(result)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -4294,23 +3920,16 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphCdlp {
-                    branch: None,
-                    graph,
-                    max_iterations: max_iterations as usize,
-                    direction,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::GraphAnalyticsU64(result) => {
-                    Ok(graph_analytics_u64_to_js(result))
-                }
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphCdlp",
-                )),
-            }
+            let result = guard
+                .graph_cdlp(
+                    &graph,
+                    max_iterations as usize,
+                    direction.as_deref(),
+                    None,
+                    None,
+                )
+                .map_err(to_napi_err)?;
+            graph_group_summary_to_js(result)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -4328,24 +3947,17 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphPagerank {
-                    branch: None,
-                    graph,
+            let result = guard
+                .graph_pagerank(
+                    &graph,
                     damping,
-                    max_iterations: max_iterations.map(|m| m as usize),
+                    max_iterations.map(|m| m as usize),
                     tolerance,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::GraphAnalyticsF64(result) => {
-                    Ok(graph_analytics_f64_to_js(result))
-                }
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphPagerank",
-                )),
-            }
+                    None,
+                    None,
+                )
+                .map_err(to_napi_err)?;
+            graph_score_summary_to_js(result)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -4357,21 +3969,8 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
-            match guard
-                .executor()
-                .execute(Command::GraphLcc {
-                    branch: None,
-                    graph,
-                })
-                .map_err(to_napi_err)?
-            {
-                Output::GraphAnalyticsF64(result) => {
-                    Ok(graph_analytics_f64_to_js(result))
-                }
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphLcc",
-                )),
-            }
+            let result = guard.graph_lcc(&graph, None, None).map_err(to_napi_err)?;
+            graph_score_summary_to_js(result)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -4388,23 +3987,179 @@ impl Strata {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let guard = lock_inner(&inner)?;
+            let result = guard
+                .graph_sssp(&graph, &source, direction.as_deref(), None, None)
+                .map_err(to_napi_err)?;
+            graph_score_summary_to_js(result)
+        })
+        .await
+        .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
+    }
+
+    // =========================================================================
+    // System Branch — internal API for strata-ai
+    // =========================================================================
+
+    /// Put a key-value pair on the `_system_` branch.
+    #[napi(js_name = "systemKvPut")]
+    pub async fn system_kv_put(&self, key: String, value: serde_json::Value) -> napi::Result<i64> {
+        let inner = self.inner.clone();
+        let v = js_to_value_checked(value, 0)?;
+        tokio::task::spawn_blocking(move || {
+            let guard = lock_inner(&inner)?;
+            guard
+                .system_branch()
+                .kv_put(&key, v)
+                .map(|n| n as i64)
+                .map_err(to_napi_err)
+        })
+        .await
+        .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
+    }
+
+    /// Get a value by key from the `_system_` branch.
+    #[napi(js_name = "systemKvGet")]
+    pub async fn system_kv_get(&self, key: String) -> napi::Result<serde_json::Value> {
+        let inner = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let guard = lock_inner(&inner)?;
+            match guard.system_branch().kv_get(&key).map_err(to_napi_err)? {
+                Some(v) => Ok(value_to_js(v)),
+                None => Ok(serde_json::Value::Null),
+            }
+        })
+        .await
+        .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
+    }
+
+    /// Delete a key from the `_system_` branch.
+    #[napi(js_name = "systemKvDelete")]
+    pub async fn system_kv_delete(&self, key: String) -> napi::Result<bool> {
+        let inner = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let guard = lock_inner(&inner)?;
+            guard.system_branch().kv_delete(&key).map_err(to_napi_err)
+        })
+        .await
+        .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
+    }
+
+    /// List keys on the `_system_` branch with optional prefix filter.
+    #[napi(js_name = "systemKvList")]
+    pub async fn system_kv_list(&self, prefix: Option<String>) -> napi::Result<Vec<String>> {
+        let inner = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let guard = lock_inner(&inner)?;
+            guard
+                .system_branch()
+                .kv_list(prefix.as_deref())
+                .map_err(to_napi_err)
+        })
+        .await
+        .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
+    }
+
+    /// Set a JSON document on the `_system_` branch.
+    #[napi(js_name = "systemJsonSet")]
+    pub async fn system_json_set(
+        &self,
+        key: String,
+        path: String,
+        value: serde_json::Value,
+    ) -> napi::Result<i64> {
+        let inner = self.inner.clone();
+        let v = js_to_value_checked(value, 0)?;
+        tokio::task::spawn_blocking(move || {
+            let guard = lock_inner(&inner)?;
+            guard
+                .system_branch()
+                .json_set(&key, &path, v)
+                .map(|n| n as i64)
+                .map_err(to_napi_err)
+        })
+        .await
+        .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
+    }
+
+    /// Get a JSON value from the `_system_` branch.
+    #[napi(js_name = "systemJsonGet")]
+    pub async fn system_json_get(
+        &self,
+        key: String,
+        path: String,
+    ) -> napi::Result<serde_json::Value> {
+        let inner = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let guard = lock_inner(&inner)?;
             match guard
-                .executor()
-                .execute(Command::GraphSssp {
-                    branch: None,
-                    graph,
-                    source,
-                    direction,
-                })
+                .system_branch()
+                .json_get(&key, &path)
                 .map_err(to_napi_err)?
             {
-                Output::GraphAnalyticsF64(result) => {
-                    Ok(graph_analytics_f64_to_js(result))
-                }
-                _ => Err(napi::Error::from_reason(
-                    "Unexpected output for GraphSssp",
-                )),
+                Some(v) => Ok(value_to_js(v)),
+                None => Ok(serde_json::Value::Null),
             }
+        })
+        .await
+        .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
+    }
+
+    /// Set a state cell on the `_system_` branch.
+    #[napi(js_name = "systemStateSet")]
+    pub async fn system_state_set(
+        &self,
+        cell: String,
+        value: serde_json::Value,
+    ) -> napi::Result<i64> {
+        let inner = self.inner.clone();
+        let v = js_to_value_checked(value, 0)?;
+        tokio::task::spawn_blocking(move || {
+            let guard = lock_inner(&inner)?;
+            guard
+                .system_branch()
+                .state_set(&cell, v)
+                .map(|n| n as i64)
+                .map_err(to_napi_err)
+        })
+        .await
+        .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
+    }
+
+    /// Get a state cell from the `_system_` branch.
+    #[napi(js_name = "systemStateGet")]
+    pub async fn system_state_get(&self, cell: String) -> napi::Result<serde_json::Value> {
+        let inner = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let guard = lock_inner(&inner)?;
+            match guard
+                .system_branch()
+                .state_get(&cell)
+                .map_err(to_napi_err)?
+            {
+                Some(v) => Ok(value_to_js(v)),
+                None => Ok(serde_json::Value::Null),
+            }
+        })
+        .await
+        .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
+    }
+
+    /// Append an event to the `_system_` branch event log.
+    #[napi(js_name = "systemEventAppend")]
+    pub async fn system_event_append(
+        &self,
+        event_type: String,
+        payload: serde_json::Value,
+    ) -> napi::Result<i64> {
+        let inner = self.inner.clone();
+        let v = js_to_value_checked(payload, 0)?;
+        tokio::task::spawn_blocking(move || {
+            let guard = lock_inner(&inner)?;
+            guard
+                .system_branch()
+                .event_append(&event_type, v)
+                .map(|n| n as i64)
+                .map_err(to_napi_err)
         })
         .await
         .map_err(|e| napi::Error::from_reason(format!("{}", e)))?
@@ -4538,34 +4293,12 @@ fn graph_bfs_result_to_js(r: GraphBfsResult) -> serde_json::Value {
     })
 }
 
-fn graph_analytics_u64_to_js(r: GraphAnalyticsU64Result) -> serde_json::Value {
-    let result: serde_json::Map<String, serde_json::Value> = r
-        .result
-        .into_iter()
-        .map(|(k, v)| (k, serde_json::Value::Number(v.into())))
-        .collect();
-    serde_json::json!({
-        "algorithm": r.algorithm,
-        "result": result,
-    })
+fn graph_group_summary_to_js(r: GraphGroupSummary) -> napi::Result<serde_json::Value> {
+    serde_json::to_value(r)
+        .map_err(|e| napi::Error::from_reason(format!("Failed to serialize GraphGroupSummary: {}", e)))
 }
 
-fn graph_analytics_f64_to_js(r: GraphAnalyticsF64Result) -> serde_json::Value {
-    let result: serde_json::Map<String, serde_json::Value> = r
-        .result
-        .into_iter()
-        .map(|(k, v)| {
-            (
-                k,
-                serde_json::Number::from_f64(v)
-                    .map(serde_json::Value::Number)
-                    .unwrap_or(serde_json::Value::Null),
-            )
-        })
-        .collect();
-    serde_json::json!({
-        "algorithm": r.algorithm,
-        "result": result,
-        "iterations": r.iterations,
-    })
+fn graph_score_summary_to_js(r: GraphScoreSummary) -> napi::Result<serde_json::Value> {
+    serde_json::to_value(r)
+        .map_err(|e| napi::Error::from_reason(format!("Failed to serialize GraphScoreSummary: {}", e)))
 }
